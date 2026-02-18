@@ -4,9 +4,12 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const path = require('path');
+const bcrypt = require('bcryptjs'); // For hashing passwords
+const jwt = require('jsonwebtoken'); // For creating tokens
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secret_key'; // Store this in .env
 
 // Middleware
 app.use(cors());
@@ -19,7 +22,24 @@ mongoose.connect(process.env.MONGODB_URI)
   .catch(err => console.error('MongoDB Connection Error:', err));
 
 // --- Models ---
+
+// User Model
+const UserSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { 
+    type: String, 
+    enum: ['customer', 'staff', 'admin'], 
+    default: 'customer' 
+  },
+  createdAt: { type: Date, default: Date.now }
+});
+const User = mongoose.model('User', UserSchema);
+
+// Booking Model
 const BookingSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Link booking to user
   name: String,
   email: String,
   phone: String,
@@ -31,12 +51,143 @@ const BookingSchema = new mongoose.Schema({
 });
 const Booking = mongoose.model('Booking', BookingSchema);
 
+// --- Middleware ---
+
+// Auth Middleware (Protects Routes)
+const auth = (req, res, next) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'No token, authorization denied' });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded; // { id: '...', role: '...' }
+    next();
+  } catch (err) {
+    res.status(401).json({ error: 'Token is not valid' });
+  }
+};
+
+// Role Middleware
+const authorize = (...roles) => {
+  return (req, res, next) => {
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
+    }
+    next();
+  };
+};
+
 // --- Routes ---
 
-// 1. Create Booking (Initial Request)
-app.post('/api/bookings', async (req, res) => {
+// 1. AUTH ROUTES ---
+
+// Register (ONLY for Customers)
+app.post('/api/auth/register', async (req, res) => {
+  const { name, email, password } = req.body;
+
   try {
-    const booking = new Booking(req.body);
+    // Check if user exists
+    let user = await User.findOne({ email });
+    if (user) return res.status(400).json({ error: 'User already exists' });
+
+    // Hash password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // Create user (Role is automatically 'customer' by default in Schema)
+    user = new User({ name, email, password: hashedPassword });
+    await user.save();
+
+    // Create token
+    const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
+
+    res.status(201).json({ 
+      token, 
+      user: { id: user._id, name: user.name, email: user.email, role: user.role } 
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Login (For all roles)
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    // Check if user exists
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ error: 'Invalid Credentials' });
+
+    // Check password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ error: 'Invalid Credentials' });
+
+    // Create token
+    const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
+
+    res.json({ 
+      token, 
+      user: { id: user._id, name: user.name, email: user.email, role: user.role } 
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get Current User (Profile)
+app.get('/api/auth/me', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password');
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. USER MANAGEMENT (Admin Enrollments) ---
+
+// Admin/Staff Creation (Protected by a Setup Secret Key)
+// This allows you to create Admins/Staff using Postman or a script without building a UI
+app.post('/api/users/create-internal', async (req, res) => {
+  const { setup_key, name, email, password, role } = req.body;
+
+  // Verify the request comes from an authorized source (like a setup script)
+  // Ideally, use a specific key stored in your .env file
+  if (setup_key !== process.env.SETUP_SECRET_KEY) {
+    return res.status(403).json({ error: 'Invalid Setup Key' });
+  }
+
+  if (!['admin', 'staff'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role for internal creation' });
+  }
+
+  try {
+    let user = await User.findOne({ email });
+    if (user) return res.status(400).json({ error: 'User already exists' });
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    user = new User({ name, email, password: hashedPassword, role });
+    await user.save();
+
+    res.status(201).json({ message: `${role} user created successfully`, user: { id: user._id, name, email, role } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// 3. BOOKING ROUTES ---
+
+// Create Booking (Any logged-in user, usually Customer)
+app.post('/api/bookings', auth, async (req, res) => {
+  try {
+    const booking = new Booking({
+      ...req.body,
+      userId: req.user.id // Attach logged-in user ID
+    });
     await booking.save();
     res.status(201).json({ message: 'Booking saved', booking });
   } catch (err) {
@@ -44,12 +195,39 @@ app.post('/api/bookings', async (req, res) => {
   }
 });
 
-// 2. Initiate Payment (Returns PayFast Form Data)
-app.post('/api/payfast/initiate', async (req, res) => {
+// Get Bookings
+// Admin gets all, Staff gets all, Customer gets only their own
+app.get('/api/bookings', auth, async (req, res) => {
+  try {
+    let bookings;
+    if (req.user.role === 'admin' || req.user.role === 'staff') {
+      bookings = await Booking.find().sort({ date: -1 });
+    } else {
+      bookings = await Booking.find({ userId: req.user.id }).sort({ date: -1 });
+    }
+    res.json(bookings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update Booking Status (Admin/Staff Only)
+app.put('/api/bookings/:id', auth, authorize('admin', 'staff'), async (req, res) => {
+  try {
+    const booking = await Booking.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json(booking);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// 4. PAYMENT ROUTES ---
+
+app.post('/api/payfast/initiate', auth, async (req, res) => {
+  // In a real app, you might verify the booking belongs to the user
   const { bookingId, amount } = req.body;
 
-  // Payfast expects a signature for security
-  // Construct the data string
   const data = {
     merchant_id: process.env.PAYFAST_MERCHANT_ID,
     merchant_key: process.env.PAYFAST_MERCHANT_KEY,
@@ -61,20 +239,11 @@ app.post('/api/payfast/initiate', async (req, res) => {
     item_name: 'Tassel Salon Booking',
   };
 
-  // Note: In production, you must generate an MD5 signature of these fields.
-  // For simplicity in this snippet, we are returning the data object.
-  // Always generate signatures server-side to keep your passphrase secret.
-
   res.json(data);
 });
 
-// 3. Payfast ITN (Instant Transaction Notification)
-// This is where Payfast tells your server payment is complete
 app.post('/api/payfast/notify', async (req, res) => {
-  // Validate the request comes from Payfast
-  // Update booking status in MongoDB
   console.log('Payment Notification Received:', req.body);
-  
   const paymentId = req.body.m_payment_id;
   
   try {
