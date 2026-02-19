@@ -121,10 +121,10 @@ const DailyOperation = mongoose.model('DailyOperation', DailyOperationSchema);
 // Notification Schema
 const NotificationSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    type: { 
-        type: String, 
+    type: {
+        type: String,
         enum: ['booking', 'reminder', 'alert', 'message'],
-        required: true 
+        required: true
     },
     title: String,
     message: String,
@@ -152,10 +152,10 @@ const StaffSchedule = mongoose.model('StaffSchedule', StaffScheduleSchema);
 
 // Product Schema
 const ProductSchema = new mongoose.Schema({
-    name: String, 
-    price: Number, 
-    category: String, 
-    image: String, 
+    name: String,
+    price: Number,
+    category: String,
+    image: String,
     stock: { type: Number, default: 0 }
 });
 const Product = mongoose.model('Product', ProductSchema);
@@ -200,9 +200,9 @@ const Voucher = mongoose.model('Voucher', VoucherSchema);
 // Leave Schema
 const LeaveSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    startDate: Date, 
-    endDate: Date, 
-    reason: String, 
+    startDate: Date,
+    endDate: Date,
+    reason: String,
     status: { type: String, default: 'pending' }
 });
 const Leave = mongoose.model('Leave', LeaveSchema);
@@ -992,6 +992,12 @@ app.get('/api/leave', auth, authorize('admin'), catchAsync(async (req, res) => {
 
 app.put('/api/leave/:id', auth, authorize('admin'), catchAsync(async (req, res) => {
     res.json(await Leave.findByIdAndUpdate(req.params.id, { status: req.body.status }, { new: true }));
+}));
+
+// Get staff's own leave requests
+app.get('/api/leave/my-requests', auth, authorize('staff'), catchAsync(async (req, res) => {
+    const leaves = await Leave.find({ userId: req.user.id }).sort({ startDate: -1 });
+    res.json(leaves);
 }));
 
 // == STATS ==
