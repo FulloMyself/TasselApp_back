@@ -45,6 +45,31 @@ const ProductSchema = new mongoose.Schema({
 });
 const Product = mongoose.model('Product', ProductSchema);
 
+// Add this with your other models
+const ServiceSchema = new mongoose.Schema({
+    category: {
+        type: String,
+        required: true,
+        enum: ['kiddies', 'adult', 'nails', 'beauty']
+    },
+    categoryDisplay: {
+        type: String,
+        required: true
+    },
+    title: { type: String, required: true },
+    description: { type: String, required: true },
+    image: { type: String, default: '' },
+    items: [{
+        name: { type: String, required: true },
+        price: { type: Number, required: true },
+        description: { type: String }
+    }],
+    order: { type: Number, default: 0 },
+    isActive: { type: Boolean, default: true },
+    createdAt: { type: Date, default: Date.now }
+});
+const Service = mongoose.model('Service', ServiceSchema);
+
 const VoucherSchema = new mongoose.Schema({
     code: { type: String, required: true, unique: true },
     discount: { type: Number, required: true },
@@ -180,6 +205,65 @@ app.put('/api/products/:id', auth, authorize('admin'), catchAsync(async (req, re
 app.delete('/api/products/:id', auth, authorize('admin'), catchAsync(async (req, res) => {
     await Product.findByIdAndDelete(req.params.id);
     res.json({ message: 'Deleted' });
+}));
+
+// == SERVICES (Admin Only) ==
+// Get all services (admin)
+app.get('/api/services', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const services = await Service.find().sort({ category: 1, order: 1 });
+    res.json(services);
+}));
+
+// Get services by category (public - no auth needed for homepage)
+app.get('/api/services/public/:category', catchAsync(async (req, res) => {
+    const services = await Service.find({
+        category: req.params.category,
+        isActive: true
+    }).sort({ order: 1 });
+    res.json(services);
+}));
+
+// Get all services grouped by category (public)
+app.get('/api/services/public', catchAsync(async (req, res) => {
+    const services = await Service.find({ isActive: true }).sort({ category: 1, order: 1 });
+
+    // Group by category
+    const grouped = {
+        kiddies: services.filter(s => s.category === 'kiddies'),
+        adult: services.filter(s => s.category === 'adult'),
+        nails: services.filter(s => s.category === 'nails'),
+        beauty: services.filter(s => s.category === 'beauty')
+    };
+
+    res.json(grouped);
+}));
+
+// Create new service
+app.post('/api/services', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const service = await new Service(req.body).save();
+    res.status(201).json(service);
+}));
+
+// Update service
+app.put('/api/services/:id', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const service = await Service.findByIdAndUpdate(
+        req.params.id,
+        req.body,
+        { new: true, runValidators: true }
+    );
+    if (!service) {
+        return res.status(404).json({ error: 'Service not found' });
+    }
+    res.json(service);
+}));
+
+// Delete service
+app.delete('/api/services/:id', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const service = await Service.findByIdAndDelete(req.params.id);
+    if (!service) {
+        return res.status(404).json({ error: 'Service not found' });
+    }
+    res.json({ message: 'Service deleted successfully' });
 }));
 
 // == VOUCHERS (Admin Only) ==
