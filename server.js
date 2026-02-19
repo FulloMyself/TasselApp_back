@@ -45,7 +45,6 @@ const ProductSchema = new mongoose.Schema({
 });
 const Product = mongoose.model('Product', ProductSchema);
 
-// Add this with your other models
 const ServiceSchema = new mongoose.Schema({
     category: {
         type: String,
@@ -61,6 +60,7 @@ const ServiceSchema = new mongoose.Schema({
     image: { type: String, default: '' },
     items: [{
         name: { type: String, required: true },
+        duration: { type: String },
         price: { type: Number, required: true },
         description: { type: String }
     }],
