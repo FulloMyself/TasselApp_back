@@ -677,6 +677,23 @@ app.get('/api/staff/schedule', auth, authorize('admin'), catchAsync(async (req, 
     res.json(events);
 }));
 
+// Get staff's own schedule (for staff users)
+app.get('/api/staff/my-schedule', auth, authorize('staff'), catchAsync(async (req, res) => {
+    const schedules = await StaffSchedule.find({ staffId: req.user.id })
+        .populate('staffId', 'name')
+        .sort({ date: 1 });
+
+    const events = schedules.map(s => ({
+        staffName: s.staffId.name,
+        start: new Date(`${s.date.toISOString().split('T')[0]}T${s.startTime}`),
+        end: new Date(`${s.date.toISOString().split('T')[0]}T${s.endTime}`),
+        shift: `${s.startTime} - ${s.endTime}`,
+        color: s.isAvailable ? '#E8B4C8' : '#F44336'
+    }));
+
+    res.json(events);
+}));
+
 app.post('/api/staff/schedule', auth, authorize('admin'), catchAsync(async (req, res) => {
     const { staffId, date, startTime, endTime, maxBookings } = req.body;
 
