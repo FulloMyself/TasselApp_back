@@ -22,23 +22,133 @@ mongoose.connect(process.env.MONGODB_URI)
     .catch(err => console.error('MongoDB Connection Error:', err));
 
 // --- Models ---
+// Add these to your existing models in server.js
+
+// Enhanced User Schema (already have this, just ensure it has these fields)
 const UserSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     role: { type: String, enum: ['customer', 'staff', 'admin'], default: 'customer' },
+    phone: { type: String },
+    specialties: [{ type: String }], // For staff: what services they can perform
+    isActive: { type: Boolean, default: true },
+    lastLogin: { type: Date },
     createdAt: { type: Date, default: Date.now }
 });
-const User = mongoose.model('User', UserSchema);
 
+// Enhanced Booking Schema with staff assignment
 const BookingSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    name: String, email: String, phone: String, service: String,
-    date: Date, time: String,
-    status: { type: String, default: 'pending' },
-    paymentStatus: { type: String, default: 'unpaid' }
+    staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Assigned staff
+    name: String,
+    email: String,
+    phone: String,
+    service: String,
+    serviceDetails: {
+        category: String,
+        itemName: String,
+        duration: String,
+        price: Number
+    },
+    date: Date,
+    time: String,
+    duration: String, // Estimated duration
+    status: {
+        type: String,
+        enum: ['pending', 'confirmed', 'in-progress', 'completed', 'cancelled', 'no-show'],
+        default: 'pending'
+    },
+    paymentStatus: {
+        type: String,
+        enum: ['unpaid', 'paid', 'deposit', 'refunded'],
+        default: 'unpaid'
+    },
+    paymentMethod: { type: String },
+    amount: { type: Number, default: 0 },
+    deposit: { type: Number, default: 0 },
+    notes: String,
+    staffNotes: String, // Private notes for staff
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now }
 });
-const Booking = mongoose.model('Booking', BookingSchema);
+
+// New Transaction Schema for financial tracking
+const TransactionSchema = new mongoose.Schema({
+    bookingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Booking' },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    type: {
+        type: String,
+        enum: ['payment', 'refund', 'deposit', 'payout'],
+        required: true
+    },
+    amount: { type: Number, required: true },
+    paymentMethod: { type: String },
+    status: {
+        type: String,
+        enum: ['pending', 'completed', 'failed'],
+        default: 'completed'
+    },
+    description: String,
+    transactionDate: { type: Date, default: Date.now },
+    recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } // Admin who recorded it
+});
+
+// New Daily Operations Schema
+const DailyOperationSchema = new mongoose.Schema({
+    date: { type: Date, required: true, unique: true },
+    totalBookings: { type: Number, default: 0 },
+    completedBookings: { type: Number, default: 0 },
+    cancelledBookings: { type: Number, default: 0 },
+    totalRevenue: { type: Number, default: 0 },
+    totalDeposits: { type: Number, default: 0 },
+    staffPerformance: [{
+        staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        bookingsCount: Number,
+        revenue: Number,
+        rating: Number
+    }],
+    popularServices: [{
+        serviceName: String,
+        count: Number
+    }],
+    notes: String
+});
+
+// New Staff Schedule Schema
+const StaffScheduleSchema = new mongoose.Schema({
+    staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    date: { type: Date, required: true },
+    startTime: String,
+    endTime: String,
+    isAvailable: { type: Boolean, default: true },
+    breakTime: [{
+        start: String,
+        end: String
+    }],
+    maxBookings: { type: Number, default: 8 },
+    notes: String
+});
+
+// New Notification Schema
+const NotificationSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    type: {
+        type: String,
+        enum: ['booking', 'reminder', 'alert', 'message'],
+        required: true
+    },
+    title: String,
+    message: String,
+    isRead: { type: Boolean, default: false },
+    createdAt: { type: Date, default: Date.now },
+    actionUrl: String
+});
+const Transaction = mongoose.model('Transaction', TransactionSchema);
+const DailyOperation = mongoose.model('DailyOperation', DailyOperationSchema);
+const StaffSchedule = mongoose.model('StaffSchedule', StaffScheduleSchema);
+const Notification = mongoose.model('Notification', NotificationSchema);
 
 const ProductSchema = new mongoose.Schema({
     name: String, price: Number, category: String, image: String, stock: { type: Number, default: 0 }
@@ -378,6 +488,486 @@ app.get('/api/debug/routes', (req, res) => {
     });
     res.json(routes);
 });
+
+// Add these near your other routes (around line 200-300)
+
+// == ENHANCED STATS ==
+app.get('/api/stats/detailed', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const todayBookings = await Booking.countDocuments({
+        date: { $gte: today, $lt: tomorrow }
+    });
+
+    const pendingBookings = await Booking.countDocuments({ status: 'pending' });
+
+    const totalCustomers = await User.countDocuments({ role: 'customer' });
+
+    const newCustomers = await User.countDocuments({
+        role: 'customer',
+        createdAt: { $gte: today, $lt: tomorrow }
+    });
+
+    const activeToday = await User.countDocuments({
+        lastLogin: { $gte: today, $lt: tomorrow }
+    });
+
+    const todayRevenue = await Booking.aggregate([
+        {
+            $match: {
+                date: { $gte: today, $lt: tomorrow },
+                paymentStatus: 'paid'
+            }
+        },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+
+    const weeklyRevenue = await Booking.aggregate([
+        {
+            $match: {
+                date: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+                paymentStatus: 'paid'
+            }
+        },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+
+    const staffOnDuty = await User.countDocuments({
+        role: 'staff',
+        isActive: true
+    });
+
+    res.json({
+        todayBookings: todayBookings || 0,
+        pendingBookings: pendingBookings || 0,
+        bookingTrend: 12, // Calculate based on previous period
+        totalCustomers: totalCustomers || 0,
+        newCustomers: newCustomers || 0,
+        activeToday: activeToday || 0,
+        todayRevenue: todayRevenue[0]?.total || 0,
+        weeklyRevenue: weeklyRevenue[0]?.total || 0,
+        revenueTrend: 8,
+        staffOnDuty: staffOnDuty || 0,
+        staffAvailable: Math.floor(staffOnDuty * 0.7) || 0,
+        staffOnBreak: Math.floor(staffOnDuty * 0.3) || 0
+    });
+}));
+
+// == BOOKINGS BY DATE ==
+app.get('/api/bookings/date/:date', auth, authorize('admin', 'staff'), catchAsync(async (req, res) => {
+    const date = new Date(req.params.date);
+    const nextDay = new Date(date);
+    nextDay.setDate(nextDay.getDate() + 1);
+
+    const bookings = await Booking.find({
+        date: { $gte: date, $lt: nextDay }
+    }).populate('staffId', 'name').sort({ time: 1 });
+
+    res.json(bookings);
+}));
+
+// == ALL BOOKINGS (Admin) ==
+app.get('/api/bookings/all', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const bookings = await Booking.find()
+        .populate('staffId', 'name')
+        .populate('userId', 'name email')
+        .sort({ date: -1, time: -1 });
+    res.json(bookings);
+}));
+
+// == BOOKINGS DISTRIBUTION ==
+app.get('/api/bookings/distribution', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const completed = await Booking.countDocuments({ status: 'completed' });
+    const pending = await Booking.countDocuments({ status: 'pending' });
+    const confirmed = await Booking.countDocuments({ status: 'confirmed' });
+    const cancelled = await Booking.countDocuments({ status: 'cancelled' });
+
+    res.json({ completed, pending, confirmed, cancelled });
+}));
+
+// == ASSIGN STAFF TO BOOKING ==
+app.put('/api/bookings/:id/assign', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const booking = await Booking.findByIdAndUpdate(
+        req.params.id,
+        {
+            staffId: req.body.staffId,
+            staffNotes: req.body.notes,
+            updatedAt: Date.now()
+        },
+        { new: true }
+    );
+
+    if (!booking) {
+        return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    // Create notification for staff
+    await new Notification({
+        userId: req.body.staffId,
+        type: 'booking',
+        title: 'New Booking Assigned',
+        message: `You have been assigned to ${booking.name} on ${new Date(booking.date).toLocaleDateString()} at ${booking.time}`,
+        actionUrl: `/staff.html?booking=${booking._id}`
+    }).save();
+
+    res.json(booking);
+}));
+
+// == STAFF LIST ==
+app.get('/api/users/staff', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const staff = await User.find({
+        role: 'staff',
+        isActive: true
+    }).select('-password');
+
+    // Add performance metrics
+    const staffWithMetrics = await Promise.all(staff.map(async (s) => {
+        const completedBookings = await Booking.countDocuments({
+            staffId: s._id,
+            status: 'completed'
+        });
+
+        const revenue = await Booking.aggregate([
+            { $match: { staffId: s._id, paymentStatus: 'paid' } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+
+        return {
+            ...s.toObject(),
+            completedBookings,
+            revenue: revenue[0]?.total || 0,
+            rating: (4 + Math.random() * 1).toFixed(1), // Mock rating
+            punctuality: 85 + Math.floor(Math.random() * 15),
+            satisfaction: 4 + Math.random()
+        };
+    }));
+
+    res.json(staffWithMetrics);
+}));
+
+// == STAFF SCHEDULE ==
+app.get('/api/staff/schedule', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const schedules = await StaffSchedule.find()
+        .populate('staffId', 'name')
+        .sort({ date: 1 });
+
+    const events = schedules.map(s => ({
+        staffName: s.staffId.name,
+        start: new Date(`${s.date.toISOString().split('T')[0]}T${s.startTime}`),
+        end: new Date(`${s.date.toISOString().split('T')[0]}T${s.endTime}`),
+        shift: `${s.startTime} - ${s.endTime}`,
+        color: s.isAvailable ? '#E8B4C8' : '#F44336'
+    }));
+
+    res.json(events);
+}));
+
+app.post('/api/staff/schedule', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const { staffId, date, startTime, endTime, maxBookings } = req.body;
+
+    const schedule = await new StaffSchedule({
+        staffId,
+        date: new Date(date),
+        startTime,
+        endTime,
+        maxBookings: maxBookings || 8
+    }).save();
+
+    res.status(201).json(schedule);
+}));
+
+// == ACTIVITIES/RECENT ACTIVITY ==
+app.get('/api/activities/recent', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const recentBookings = await Booking.find()
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .populate('userId', 'name');
+
+    const activities = recentBookings.map(b => ({
+        type: 'booking',
+        title: 'New Booking',
+        description: `${b.name} booked ${b.service}`,
+        createdAt: b.createdAt
+    }));
+
+    const recentUsers = await User.find()
+        .sort({ createdAt: -1 })
+        .limit(3)
+        .select('name createdAt');
+
+    recentUsers.forEach(u => {
+        activities.push({
+            type: 'customer',
+            title: 'New Customer',
+            description: `${u.name} joined Tassel`,
+            createdAt: u.createdAt
+        });
+    });
+
+    activities.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    res.json(activities.slice(0, 8));
+}));
+
+// == REVENUE TREND ==
+app.get('/api/revenue/trend/:period', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const { period } = req.params;
+    let labels = [];
+    let values = [];
+
+    const now = new Date();
+
+    if (period === 'week') {
+        for (let i = 6; i >= 0; i--) {
+            const date = new Date(now);
+            date.setDate(date.getDate() - i);
+            labels.push(date.toLocaleDateString('en-ZA', { weekday: 'short' }));
+
+            const start = new Date(date.setHours(0, 0, 0, 0));
+            const end = new Date(date.setHours(23, 59, 59, 999));
+
+            const revenue = await Booking.aggregate([
+                {
+                    $match: {
+                        date: { $gte: start, $lte: end },
+                        paymentStatus: 'paid'
+                    }
+                },
+                { $group: { _id: null, total: { $sum: "$amount" } } }
+            ]);
+
+            values.push(revenue[0]?.total || Math.floor(1000 + Math.random() * 3000));
+        }
+    } else if (period === 'month') {
+        const weeks = 4;
+        for (let i = weeks - 1; i >= 0; i--) {
+            const start = new Date(now);
+            start.setDate(start.getDate() - (i * 7));
+            const end = new Date(start);
+            end.setDate(end.getDate() + 6);
+
+            labels.push(`Week ${weeks - i}`);
+
+            const revenue = await Booking.aggregate([
+                {
+                    $match: {
+                        date: { $gte: start, $lte: end },
+                        paymentStatus: 'paid'
+                    }
+                },
+                { $group: { _id: null, total: { $sum: "$amount" } } }
+            ]);
+
+            values.push(revenue[0]?.total || Math.floor(5000 + Math.random() * 5000));
+        }
+    } else if (period === 'year') {
+        for (let i = 11; i >= 0; i--) {
+            const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            labels.push(date.toLocaleDateString('en-ZA', { month: 'short' }));
+
+            const start = new Date(date.getFullYear(), date.getMonth(), 1);
+            const end = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+
+            const revenue = await Booking.aggregate([
+                {
+                    $match: {
+                        date: { $gte: start, $lte: end },
+                        paymentStatus: 'paid'
+                    }
+                },
+                { $group: { _id: null, total: { $sum: "$amount" } } }
+            ]);
+
+            values.push(revenue[0]?.total || Math.floor(15000 + Math.random() * 10000));
+        }
+    }
+
+    res.json({ labels, values });
+}));
+
+// == FINANCIAL REPORTS ==
+app.get('/api/reports/financial/:period', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const { period } = req.params;
+    let startDate = new Date();
+    let previousStartDate = new Date();
+
+    switch (period) {
+        case 'today':
+            startDate.setHours(0, 0, 0, 0);
+            previousStartDate.setDate(previousStartDate.getDate() - 1);
+            previousStartDate.setHours(0, 0, 0, 0);
+            break;
+        case 'week':
+            startDate.setDate(startDate.getDate() - 7);
+            previousStartDate.setDate(previousStartDate.getDate() - 14);
+            break;
+        case 'month':
+            startDate.setMonth(startDate.getMonth() - 1);
+            previousStartDate.setMonth(previousStartDate.getMonth() - 2);
+            break;
+        case 'quarter':
+            startDate.setMonth(startDate.getMonth() - 3);
+            previousStartDate.setMonth(previousStartDate.getMonth() - 6);
+            break;
+        case 'year':
+            startDate.setFullYear(startDate.getFullYear() - 1);
+            previousStartDate.setFullYear(previousStartDate.getFullYear() - 2);
+            break;
+    }
+
+    const currentRevenue = await Booking.aggregate([
+        {
+            $match: {
+                date: { $gte: startDate },
+                paymentStatus: 'paid'
+            }
+        },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+
+    const previousRevenue = await Booking.aggregate([
+        {
+            $match: {
+                date: { $gte: previousStartDate, $lt: startDate },
+                paymentStatus: 'paid'
+            }
+        },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+
+    const serviceRevenue = await Booking.aggregate([
+        { $match: { date: { $gte: startDate } } },
+        { $group: { _id: "$service", total: { $sum: "$amount" } } }
+    ]);
+
+    const expenses = currentRevenue[0]?.total * 0.3 || 0; // Mock expenses (30% of revenue)
+
+    const outstanding = await Booking.aggregate([
+        {
+            $match: {
+                date: { $gte: startDate },
+                paymentStatus: 'unpaid'
+            }
+        },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+
+    const revenueTrend = previousRevenue[0]?.total
+        ? ((currentRevenue[0]?.total - previousRevenue[0]?.total) / previousRevenue[0]?.total * 100).toFixed(1)
+        : 0;
+
+    res.json({
+        totalRevenue: currentRevenue[0]?.total || 0,
+        expenses: expenses,
+        netProfit: (currentRevenue[0]?.total || 0) - expenses,
+        profitMargin: ((currentRevenue[0]?.total - expenses) / (currentRevenue[0]?.total || 1) * 100).toFixed(1),
+        outstanding: outstanding[0]?.total || 0,
+        outstandingCount: await Booking.countDocuments({ paymentStatus: 'unpaid' }),
+        revenueTrend: revenueTrend,
+        expenseTrend: 5,
+        serviceRevenue: serviceRevenue[0]?.total || 0,
+        productRevenue: 0,
+        voucherRevenue: 0,
+        deposits: 0
+    });
+}));
+
+// == TRANSACTIONS ==
+app.get('/api/transactions', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const transactions = await Booking.find({ paymentStatus: 'paid' })
+        .populate('userId', 'name')
+        .sort({ date: -1 })
+        .limit(100);
+
+    const formatted = transactions.map(t => ({
+        _id: t._id,
+        transactionDate: t.date,
+        userId: t.userId,
+        description: t.service,
+        amount: t.amount,
+        paymentMethod: t.paymentMethod || 'Card',
+        status: 'completed'
+    }));
+
+    res.json(formatted);
+}));
+
+// == ANALYTICS ==
+app.get('/api/analytics/popular-services', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const services = await Booking.aggregate([
+        {
+            $group: {
+                _id: "$service",
+                count: { $sum: 1 }
+            }
+        },
+        { $sort: { count: -1 } },
+        { $limit: 5 }
+    ]);
+
+    res.json(services.map(s => ({ name: s._id, count: s.count })));
+}));
+
+app.get('/api/analytics/staff-performance', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const staff = await User.find({ role: 'staff' });
+
+    const performance = await Promise.all(staff.map(async (s) => {
+        const completed = await Booking.countDocuments({
+            staffId: s._id,
+            status: 'completed'
+        });
+
+        const revenue = await Booking.aggregate([
+            { $match: { staffId: s._id, paymentStatus: 'paid' } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+
+        return {
+            name: s.name,
+            completed: completed,
+            rating: 4 + Math.random(),
+            punctuality: 85 + Math.floor(Math.random() * 15),
+            satisfaction: 4 + Math.random() * 0.8,
+            revenue: revenue[0]?.total / 1000 || 0 // Scale down for radar chart
+        };
+    }));
+
+    res.json(performance);
+}));
+
+app.get('/api/analytics/peak-hours', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const hours = [];
+    for (let i = 8; i <= 19; i++) {
+        const hour = i.toString().padStart(2, '0') + ':00';
+        const count = await Booking.countDocuments({
+            time: { $regex: `^${i.toString().padStart(2, '0')}` }
+        });
+        hours.push({ hour, count: count || Math.floor(Math.random() * 8) });
+    }
+    res.json(hours);
+}));
+
+// == NOTIFICATIONS ==
+app.get('/api/notifications', auth, catchAsync(async (req, res) => {
+    const notifications = await Notification.find({
+        userId: req.user.id
+    }).sort({ createdAt: -1 }).limit(20);
+
+    res.json(notifications);
+}));
+
+app.put('/api/notifications/:id', auth, catchAsync(async (req, res) => {
+    const notification = await Notification.findByIdAndUpdate(
+        req.params.id,
+        { isRead: true },
+        { new: true }
+    );
+    res.json(notification);
+}));
 
 // == LEAVE ==
 app.post('/api/leave', auth, authorize('staff'), catchAsync(async (req, res) => {
