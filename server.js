@@ -22,25 +22,24 @@ mongoose.connect(process.env.MONGODB_URI)
     .catch(err => console.error('MongoDB Connection Error:', err));
 
 // --- Models ---
-// Add these to your existing models in server.js
-
-// Enhanced User Schema (already have this, just ensure it has these fields)
+// User Schema
 const UserSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     role: { type: String, enum: ['customer', 'staff', 'admin'], default: 'customer' },
     phone: { type: String },
-    specialties: [{ type: String }], // For staff: what services they can perform
+    specialties: [{ type: String }],
     isActive: { type: Boolean, default: true },
     lastLogin: { type: Date },
     createdAt: { type: Date, default: Date.now }
 });
+const User = mongoose.model('User', UserSchema);
 
-// Enhanced Booking Schema with staff assignment
+// Booking Schema
 const BookingSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Assigned staff
+    staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     name: String,
     email: String,
     phone: String,
@@ -53,7 +52,7 @@ const BookingSchema = new mongoose.Schema({
     },
     date: Date,
     time: String,
-    duration: String, // Estimated duration
+    duration: String,
     status: {
         type: String,
         enum: ['pending', 'confirmed', 'in-progress', 'completed', 'cancelled', 'no-show'],
@@ -68,12 +67,13 @@ const BookingSchema = new mongoose.Schema({
     amount: { type: Number, default: 0 },
     deposit: { type: Number, default: 0 },
     notes: String,
-    staffNotes: String, // Private notes for staff
+    staffNotes: String,
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now }
 });
+const Booking = mongoose.model('Booking', BookingSchema);
 
-// New Transaction Schema for financial tracking
+// Transaction Schema
 const TransactionSchema = new mongoose.Schema({
     bookingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Booking' },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -92,10 +92,11 @@ const TransactionSchema = new mongoose.Schema({
     },
     description: String,
     transactionDate: { type: Date, default: Date.now },
-    recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } // Admin who recorded it
+    recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 });
+const Transaction = mongoose.model('Transaction', TransactionSchema);
 
-// New Daily Operations Schema
+// Daily Operation Schema
 const DailyOperationSchema = new mongoose.Schema({
     date: { type: Date, required: true, unique: true },
     totalBookings: { type: Number, default: 0 },
@@ -115,8 +116,7 @@ const DailyOperationSchema = new mongoose.Schema({
     }],
     notes: String
 });
-
-// Add these with your other models (around line 40-60)
+const DailyOperation = mongoose.model('DailyOperation', DailyOperationSchema);
 
 // Notification Schema
 const NotificationSchema = new mongoose.Schema({
@@ -132,6 +132,7 @@ const NotificationSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now },
     actionUrl: String
 });
+const Notification = mongoose.model('Notification', NotificationSchema);
 
 // Staff Schedule Schema
 const StaffScheduleSchema = new mongoose.Schema({
@@ -147,16 +148,19 @@ const StaffScheduleSchema = new mongoose.Schema({
     maxBookings: { type: Number, default: 8 },
     notes: String
 });
-const Transaction = mongoose.model('Transaction', TransactionSchema);
-const DailyOperation = mongoose.model('DailyOperation', DailyOperationSchema);
 const StaffSchedule = mongoose.model('StaffSchedule', StaffScheduleSchema);
-const Notification = mongoose.model('Notification', NotificationSchema);
 
+// Product Schema
 const ProductSchema = new mongoose.Schema({
-    name: String, price: Number, category: String, image: String, stock: { type: Number, default: 0 }
+    name: String, 
+    price: Number, 
+    category: String, 
+    image: String, 
+    stock: { type: Number, default: 0 }
 });
 const Product = mongoose.model('Product', ProductSchema);
 
+// Service Schema
 const ServiceSchema = new mongoose.Schema({
     category: {
         type: String,
@@ -182,6 +186,7 @@ const ServiceSchema = new mongoose.Schema({
 });
 const Service = mongoose.model('Service', ServiceSchema);
 
+// Voucher Schema
 const VoucherSchema = new mongoose.Schema({
     code: { type: String, required: true, unique: true },
     discount: { type: Number, required: true },
@@ -192,9 +197,13 @@ const VoucherSchema = new mongoose.Schema({
 });
 const Voucher = mongoose.model('Voucher', VoucherSchema);
 
+// Leave Schema
 const LeaveSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    startDate: Date, endDate: Date, reason: String, status: { type: String, default: 'pending' }
+    startDate: Date, 
+    endDate: Date, 
+    reason: String, 
+    status: { type: String, default: 'pending' }
 });
 const Leave = mongoose.model('Leave', LeaveSchema);
 
