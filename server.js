@@ -116,7 +116,24 @@ const DailyOperationSchema = new mongoose.Schema({
     notes: String
 });
 
-// New Staff Schedule Schema
+// Add these with your other models (around line 40-60)
+
+// Notification Schema
+const NotificationSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    type: { 
+        type: String, 
+        enum: ['booking', 'reminder', 'alert', 'message'],
+        required: true 
+    },
+    title: String,
+    message: String,
+    isRead: { type: Boolean, default: false },
+    createdAt: { type: Date, default: Date.now },
+    actionUrl: String
+});
+
+// Staff Schedule Schema
 const StaffScheduleSchema = new mongoose.Schema({
     staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     date: { type: Date, required: true },
@@ -129,21 +146,6 @@ const StaffScheduleSchema = new mongoose.Schema({
     }],
     maxBookings: { type: Number, default: 8 },
     notes: String
-});
-
-// New Notification Schema
-const NotificationSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    type: {
-        type: String,
-        enum: ['booking', 'reminder', 'alert', 'message'],
-        required: true
-    },
-    title: String,
-    message: String,
-    isRead: { type: Boolean, default: false },
-    createdAt: { type: Date, default: Date.now },
-    actionUrl: String
 });
 const Transaction = mongoose.model('Transaction', TransactionSchema);
 const DailyOperation = mongoose.model('DailyOperation', DailyOperationSchema);
