@@ -46,7 +46,12 @@ const ProductSchema = new mongoose.Schema({
 const Product = mongoose.model('Product', ProductSchema);
 
 const VoucherSchema = new mongoose.Schema({
-    code: String, discount: Number, expiry: Date, isActive: { type: Boolean, default: true }
+    code: { type: String, required: true, unique: true },
+    discount: { type: Number, required: true },
+    discountType: { type: String, enum: ['fixed', 'percentage'], default: 'fixed' },
+    expiry: { type: Date, required: true },
+    isActive: { type: Boolean, default: true },
+    createdAt: { type: Date, default: Date.now }
 });
 const Voucher = mongoose.model('Voucher', VoucherSchema);
 
@@ -86,10 +91,10 @@ const authorize = (...roles) => (req, res, next) => {
 app.post('/api/auth/register', catchAsync(async (req, res) => {
     const { name, email, password } = req.body;
     if (await User.findOne({ email })) return res.status(400).json({ error: 'User already exists' });
-    
+
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = await new User({ name, email, password: hashedPassword }).save();
-    
+
     const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
     res.status(201).json({ token, user: { id: user._id, name, email, role: user.role } });
 }));
@@ -178,19 +183,117 @@ app.delete('/api/products/:id', auth, authorize('admin'), catchAsync(async (req,
 }));
 
 // == VOUCHERS (Admin Only) ==
+// Get all vouchers
 app.get('/api/vouchers', auth, authorize('admin'), catchAsync(async (req, res) => {
-    res.json(await Voucher.find());
+    const vouchers = await Voucher.find().sort({ createdAt: -1 });
+    res.json(vouchers);
 }));
 
+// Create new voucher
 app.post('/api/vouchers', auth, authorize('admin'), catchAsync(async (req, res) => {
-    const voucher = await new Voucher(req.body).save();
+    const { code, discount, discountType, expiry, isActive } = req.body;
+
+    // Check if voucher code already exists
+    const existingVoucher = await Voucher.findOne({ code: code.toUpperCase() });
+    if (existingVoucher) {
+        return res.status(400).json({ error: 'Voucher code already exists' });
+    }
+
+    // Validate discount based on type
+    if (discountType === 'percentage' && (discount < 0 || discount > 100)) {
+        return res.status(400).json({ error: 'Percentage discount must be between 0 and 100' });
+    }
+
+    const voucher = new Voucher({
+        code: code.toUpperCase(),
+        discount,
+        discountType: discountType || 'fixed',
+        expiry,
+        isActive: isActive !== undefined ? isActive : true
+    });
+
+    await voucher.save();
     res.status(201).json(voucher);
 }));
 
-app.delete('/api/vouchers/:id', auth, authorize('admin'), catchAsync(async (req, res) => {
-    await Voucher.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Deleted' });
+// Update voucher - PUT endpoint (THIS IS THE MISSING ONE)
+app.put('/api/vouchers/:id', auth, authorize('admin'), catchAsync(async (req, res) => {
+    console.log('PUT /api/vouchers/:id called with ID:', req.params.id); // Debug log
+    console.log('Request body:', req.body); // Debug log
+
+    const { code, discount, discountType, expiry, isActive } = req.body;
+
+    // Validate discount based on type
+    if (discountType === 'percentage' && (discount < 0 || discount > 100)) {
+        return res.status(400).json({ error: 'Percentage discount must be between 0 and 100' });
+    }
+
+    // Check if code exists for another voucher (excluding this one)
+    if (code) {
+        const existingVoucher = await Voucher.findOne({
+            code: code.toUpperCase(),
+            _id: { $ne: req.params.id }
+        });
+        if (existingVoucher) {
+            return res.status(400).json({ error: 'Voucher code already exists' });
+        }
+    }
+
+    const voucher = await Voucher.findByIdAndUpdate(
+        req.params.id,
+        {
+            code: code ? code.toUpperCase() : undefined,
+            discount,
+            discountType,
+            expiry,
+            isActive
+        },
+        { new: true, runValidators: true }
+    );
+
+    if (!voucher) {
+        return res.status(404).json({ error: 'Voucher not found' });
+    }
+
+    console.log('Voucher updated successfully:', voucher); // Debug log
+    res.json(voucher);
 }));
+
+// Delete voucher
+app.delete('/api/vouchers/:id', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const voucher = await Voucher.findByIdAndDelete(req.params.id);
+    if (!voucher) {
+        return res.status(404).json({ error: 'Voucher not found' });
+    }
+    res.json({ message: 'Voucher deleted successfully' });
+}));
+
+// Add this TEMPORARY debug route - put it near your other routes
+app.get('/api/debug/routes', (req, res) => {
+    const routes = [];
+    app._router.stack.forEach(middleware => {
+        if (middleware.route) {
+            // Routes registered directly
+            const methods = Object.keys(middleware.route.methods).join(', ').toUpperCase();
+            routes.push({
+                path: middleware.route.path,
+                methods: methods
+            });
+        } else if (middleware.name === 'router') {
+            // Router middleware
+            middleware.handle.stack.forEach(handler => {
+                if (handler.route) {
+                    const methods = Object.keys(handler.route.methods).join(', ').toUpperCase();
+                    routes.push({
+                        path: handler.route.path,
+                        methods: methods
+                    });
+                }
+            });
+        }
+    });
+    res.json(routes);
+});
 
 // == LEAVE ==
 app.post('/api/leave', auth, authorize('staff'), catchAsync(async (req, res) => {
