@@ -6,7 +6,7 @@ const cors = require('cors');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -310,40 +310,30 @@ app.post('/api/users/:id/reset-password', auth, authorize('admin'), catchAsync(a
     user.password = await bcrypt.hash(tempPassword, 10);
     await user.save();
 
-    // Attempt to email the temporary password if SMTP configured
-    const smtpHost = process.env.SMTP_HOST;
-    if (smtpHost) {
+    // If a PHP email service is configured, call it to send the temporary password
+    const phpMailUrl = process.env.PHP_MAIL_URL; // e.g. https://example.com/send-email.php
+    if (phpMailUrl) {
         try {
-            const transporter = nodemailer.createTransport({
-                host: process.env.SMTP_HOST,
-                port: Number(process.env.SMTP_PORT) || 587,
-                secure: process.env.SMTP_SECURE === 'true',
-                auth: {
-                    user: process.env.SMTP_USER,
-                    pass: process.env.SMTP_PASS
-                }
-            });
-
-            const from = process.env.FROM_EMAIL || process.env.SMTP_USER;
-            const mailOpts = {
-                from,
+            const payload = {
                 to: user.email,
                 subject: 'Your temporary password',
                 text: `An administrator has requested a password reset for your account. Your temporary password is: ${tempPassword}\n\nPlease log in and change your password immediately.`,
-                html: `<p>An administrator has requested a password reset for your account.</p><p><strong>Your temporary password is:</strong> <code>${tempPassword}</code></p><p>Please log in and change your password immediately.</p>`
+                html: `<p>An administrator has requested a password reset for your account.</p><p><strong>Your temporary password is:</strong> <code>${tempPassword}</code></p><p>Please log in and change your password immediately.</p>`,
+                // optional secret or API key for your PHP endpoint
+                apiKey: process.env.PHP_MAIL_KEY || ''
             };
 
-            await transporter.sendMail(mailOpts);
-            return res.json({ message: 'Password reset and emailed to user' });
-        } catch (mailErr) {
-            console.error('Error sending reset email:', mailErr);
+            await axios.post(phpMailUrl, payload, { timeout: 10000 });
+            return res.json({ message: 'Password reset and emailed via PHP service' });
+        } catch (phpErr) {
+            console.error('Error calling PHP mail service:', phpErr);
             // fallback to returning temp password in response so admin can deliver it manually
-            return res.json({ message: 'Password reset, but email failed to send', tempPassword });
+            return res.json({ message: 'Password reset, but PHP email failed', tempPassword });
         }
     }
 
-    // If SMTP not configured, return temp password so admin can deliver it manually
-    res.json({ message: 'Password reset (no SMTP configured)', tempPassword });
+    // If no PHP mail endpoint configured, return temp password so admin can deliver it manually
+    res.json({ message: 'Password reset (no PHP mail service configured)', tempPassword });
 }));
 
 // == BOOKINGS ==
