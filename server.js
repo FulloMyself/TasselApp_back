@@ -6,6 +6,7 @@ const cors = require('cors');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -290,6 +291,59 @@ app.post('/api/users/create-internal', catchAsync(async (req, res) => {
 app.get('/api/users', auth, authorize('admin', 'staff'), catchAsync(async (req, res) => {
     const users = await User.find().select('-password');
     res.json(users);
+}));
+
+// Get single user (Admin)
+app.get('/api/users/:id', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const user = await User.findById(req.params.id).select('-password');
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(user);
+}));
+
+// Reset user password (Admin) - returns a temporary password
+app.post('/api/users/:id/reset-password', auth, authorize('admin'), catchAsync(async (req, res) => {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // generate temporary password
+    const tempPassword = Math.random().toString(36).slice(-10) || 'TempPass123';
+    user.password = await bcrypt.hash(tempPassword, 10);
+    await user.save();
+
+    // Attempt to email the temporary password if SMTP configured
+    const smtpHost = process.env.SMTP_HOST;
+    if (smtpHost) {
+        try {
+            const transporter = nodemailer.createTransport({
+                host: process.env.SMTP_HOST,
+                port: Number(process.env.SMTP_PORT) || 587,
+                secure: process.env.SMTP_SECURE === 'true',
+                auth: {
+                    user: process.env.SMTP_USER,
+                    pass: process.env.SMTP_PASS
+                }
+            });
+
+            const from = process.env.FROM_EMAIL || process.env.SMTP_USER;
+            const mailOpts = {
+                from,
+                to: user.email,
+                subject: 'Your temporary password',
+                text: `An administrator has requested a password reset for your account. Your temporary password is: ${tempPassword}\n\nPlease log in and change your password immediately.`,
+                html: `<p>An administrator has requested a password reset for your account.</p><p><strong>Your temporary password is:</strong> <code>${tempPassword}</code></p><p>Please log in and change your password immediately.</p>`
+            };
+
+            await transporter.sendMail(mailOpts);
+            return res.json({ message: 'Password reset and emailed to user' });
+        } catch (mailErr) {
+            console.error('Error sending reset email:', mailErr);
+            // fallback to returning temp password in response so admin can deliver it manually
+            return res.json({ message: 'Password reset, but email failed to send', tempPassword });
+        }
+    }
+
+    // If SMTP not configured, return temp password so admin can deliver it manually
+    res.json({ message: 'Password reset (no SMTP configured)', tempPassword });
 }));
 
 // == BOOKINGS ==
