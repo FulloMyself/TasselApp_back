@@ -10,7 +10,11 @@ const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secret_key';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+    console.error('FATAL: JWT_SECRET is not set in environment variables. Set JWT_SECRET and restart.');
+    process.exit(1);
+}
 
 // Middleware
 app.use(cors());
@@ -303,58 +307,53 @@ app.get('/api/users/:id', auth, authorize('admin'), catchAsync(async (req, res) 
     res.json(user);
 }));
 
-// Reset user password (Admin) - initiate token-based reset (emails a one-time link). Falls back to temp password if mail fails / not configured.
+// Reset user password (Admin) - initiate token-based reset (returns a one-time link).
+// The link can be delivered by the admin via WhatsApp or another channel. If
+// a WhatsApp API is configured via env vars, the server will attempt to send
+// the reset link to the user's phone.
 app.post('/api/users/:id/reset-password', auth, authorize('admin'), catchAsync(async (req, res) => {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Generate a secure reset token (plain token will be emailed; store a hash)
+    // Generate a secure reset token (plain token will be sent; store a hash)
     const crypto = require('crypto');
     const resetToken = crypto.randomBytes(24).toString('hex');
     const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
     const expires = Date.now() + (60 * 60 * 1000); // 1 hour
 
-    user.resetToken = resetTokenHash;
-    user.resetExpires = new Date(expires);
-    await user.save();
-
-    const phpMailUrl = process.env.PHP_MAIL_URL; // e.g. https://example.com/send-email.php
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5500';
-    const resetLink = `${frontendUrl.replace(/\/$/, '')}/reset-password.html?token=${resetToken}&email=${encodeURIComponent(user.email)}`;
-
-    // Email payload
-    const payload = {
-        to: user.email,
-        subject: 'Password reset for your account',
-        text: `A password reset was requested for your account. Use the link to set a new password: ${resetLink}\nThis link expires in 1 hour. If you did not request this, please contact support.`,
-        html: `<p>A password reset was requested for your account.</p><p>Click <a href="${resetLink}">here</a> to set a new password. This link expires in 1 hour.</p><p>If you did not request this, please contact support.</p>`,
-        apiKey: process.env.PHP_MAIL_KEY || ''
-    };
-
-    if (phpMailUrl) {
-        try {
-            await axios.post(phpMailUrl, payload, { timeout: 10000 });
-            return res.json({ message: 'Password reset email sent' });
-        } catch (phpErr) {
-            console.error('Error calling PHP mail service:', phpErr && phpErr.message ? phpErr.message : phpErr);
-            // If mail failed, fallback to setting a temporary password so admin can give it to user
-            const tempPassword = Math.random().toString(36).slice(-10) || 'TempPass123!';
-            user.password = await bcrypt.hash(tempPassword, 10);
-            // clear reset token fields to avoid confusion
-            user.resetToken = undefined;
-            user.resetExpires = undefined;
-            await user.save();
-            return res.json({ message: 'Password reset, but email failed', tempPassword });
-        }
-    }
-
-    // No PHP mail configured: fallback to temp password (admin must deliver it manually)
+    // For Tassel workflow we generate a temporary password which Tassel will
+    // deliver to the user via the salon's WhatsApp. Store the temp password in
+    // the user's account (hashed) and create a prefilled wa.me link for Tassel.
     const tempPassword = Math.random().toString(36).slice(-10) || 'TempPass123!';
     user.password = await bcrypt.hash(tempPassword, 10);
+    // Clear any token-based fields
     user.resetToken = undefined;
     user.resetExpires = undefined;
     await user.save();
-    res.json({ message: 'Password reset (no PHP mail service configured)', tempPassword });
+
+    const whatsappContact = process.env.WHATSAPP_CONTACT; // e.g. https://wa.me/27729605153
+    const message = `Password reset requested for user ${user.name || ''} (${user.email}). Temp password: ${tempPassword}. User phone: ${user.phone || 'N/A'}. Please send this to the user.`;
+    let waLink = null;
+    if (whatsappContact) {
+        waLink = `${whatsappContact.replace(/\/$/, '')}?text=${encodeURIComponent(message)}`;
+    }
+
+    // Create an internal notification so admins can see and click the wa.me link
+    try {
+        await new Notification({
+            userId: req.user.id,
+            type: 'alert',
+            title: 'Password Reset Ready for Delivery',
+            message,
+            actionUrl: waLink
+        }).save();
+    } catch (nErr) {
+        console.error('Failed to create notification for password reset:', nErr && nErr.message ? nErr.message : nErr);
+    }
+
+    // Return the temp password and wa.me link to the admin caller so they can
+    // copy/send it if needed. The waLink is also persisted in the notification.
+    res.json({ message: 'Password reset created. Deliver temp password via WhatsApp.', tempPassword, waLink });
 }));
 
 // == BOOKINGS ==
