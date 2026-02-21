@@ -37,9 +37,6 @@ const UserSchema = new mongoose.Schema({
     specialties: [{ type: String }],
     isActive: { type: Boolean, default: true },
     lastLogin: { type: Date },
-    // password reset token (hashed) and expiry
-    resetToken: { type: String },
-    resetExpires: { type: Date },
     createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', UserSchema);
@@ -307,28 +304,16 @@ app.get('/api/users/:id', auth, authorize('admin'), catchAsync(async (req, res) 
     res.json(user);
 }));
 
-// Reset user password (Admin) - initiate token-based reset (returns a one-time link).
-// The link can be delivered by the admin via WhatsApp or another channel. If
-// a WhatsApp API is configured via env vars, the server will attempt to send
-// the reset link to the user's phone.
+// Reset user password (Admin) - generates a temporary password and prepares WhatsApp delivery.
+// Admin receives temp password and wa.me link to send to the user via WhatsApp.
 app.post('/api/users/:id/reset-password', auth, authorize('admin'), catchAsync(async (req, res) => {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Generate a secure reset token (plain token will be sent; store a hash)
-    const crypto = require('crypto');
-    const resetToken = crypto.randomBytes(24).toString('hex');
-    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
-    const expires = Date.now() + (60 * 60 * 1000); // 1 hour
-
-    // For Tassel workflow we generate a temporary password which Tassel will
-    // deliver to the user via the salon's WhatsApp. Store the temp password in
-    // the user's account (hashed) and create a prefilled wa.me link for Tassel.
+    // Generate a temporary password for the user to log in with.
+    // Tassel will deliver this via WhatsApp, then user changes it via their Profile.
     const tempPassword = Math.random().toString(36).slice(-10) || 'TempPass123!';
     user.password = await bcrypt.hash(tempPassword, 10);
-    // Clear any token-based fields
-    user.resetToken = undefined;
-    user.resetExpires = undefined;
     await user.save();
 
     const whatsappContact = process.env.WHATSAPP_CONTACT; // e.g. https://wa.me/27729605153
@@ -643,25 +628,6 @@ app.get('/api/bookings/date/:date', auth, authorize('admin', 'staff'), catchAsyn
     }).populate('staffId', 'name').sort({ time: 1 });
 
     res.json(bookings);
-}));
-
-// == PUBLIC: Complete password reset using token ==
-app.post('/api/users/reset-password', catchAsync(async (req, res) => {
-    const { token, password, email } = req.body;
-    if (!token || !password || !email) return res.status(400).json({ error: 'token, email and password are required' });
-
-    const crypto = require('crypto');
-    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-
-    const user = await User.findOne({ email: email, resetToken: tokenHash, resetExpires: { $gt: new Date() } });
-    if (!user) return res.status(400).json({ error: 'Invalid or expired token' });
-
-    user.password = await bcrypt.hash(password, 10);
-    user.resetToken = undefined;
-    user.resetExpires = undefined;
-    await user.save();
-
-    res.json({ message: 'Password updated successfully' });
 }));
 
 // == ALL BOOKINGS (Admin) ==
