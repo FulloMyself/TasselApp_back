@@ -33,6 +33,9 @@ const UserSchema = new mongoose.Schema({
     specialties: [{ type: String }],
     isActive: { type: Boolean, default: true },
     lastLogin: { type: Date },
+    // password reset token (hashed) and expiry
+    resetToken: { type: String },
+    resetExpires: { type: Date },
     createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', UserSchema);
@@ -300,39 +303,57 @@ app.get('/api/users/:id', auth, authorize('admin'), catchAsync(async (req, res) 
     res.json(user);
 }));
 
-// Reset user password (Admin) - returns a temporary password
+// Reset user password (Admin) - initiate token-based reset (emails a one-time link). Falls back to temp password if mail fails / not configured.
 app.post('/api/users/:id/reset-password', auth, authorize('admin'), catchAsync(async (req, res) => {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // generate temporary password
-    const tempPassword = Math.random().toString(36).slice(-10) || 'TempPass123';
-    user.password = await bcrypt.hash(tempPassword, 10);
+    // Generate a secure reset token (plain token will be emailed; store a hash)
+    const crypto = require('crypto');
+    const resetToken = crypto.randomBytes(24).toString('hex');
+    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+    const expires = Date.now() + (60 * 60 * 1000); // 1 hour
+
+    user.resetToken = resetTokenHash;
+    user.resetExpires = new Date(expires);
     await user.save();
 
-    // If a PHP email service is configured, call it to send the temporary password
     const phpMailUrl = process.env.PHP_MAIL_URL; // e.g. https://example.com/send-email.php
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5500';
+    const resetLink = `${frontendUrl.replace(/\/$/, '')}/reset-password.html?token=${resetToken}&email=${encodeURIComponent(user.email)}`;
+
+    // Email payload
+    const payload = {
+        to: user.email,
+        subject: 'Password reset for your account',
+        text: `A password reset was requested for your account. Use the link to set a new password: ${resetLink}\nThis link expires in 1 hour. If you did not request this, please contact support.`,
+        html: `<p>A password reset was requested for your account.</p><p>Click <a href="${resetLink}">here</a> to set a new password. This link expires in 1 hour.</p><p>If you did not request this, please contact support.</p>`,
+        apiKey: process.env.PHP_MAIL_KEY || ''
+    };
+
     if (phpMailUrl) {
         try {
-            const payload = {
-                to: user.email,
-                subject: 'Your temporary password',
-                text: `An administrator has requested a password reset for your account. Your temporary password is: ${tempPassword}\n\nPlease log in and change your password immediately.`,
-                html: `<p>An administrator has requested a password reset for your account.</p><p><strong>Your temporary password is:</strong> <code>${tempPassword}</code></p><p>Please log in and change your password immediately.</p>`,
-                // optional secret or API key for your PHP endpoint
-                apiKey: process.env.PHP_MAIL_KEY || ''
-            };
-
             await axios.post(phpMailUrl, payload, { timeout: 10000 });
-            return res.json({ message: 'Password reset and emailed via PHP service' });
+            return res.json({ message: 'Password reset email sent' });
         } catch (phpErr) {
-            console.error('Error calling PHP mail service:', phpErr);
-            // fallback to returning temp password in response so admin can deliver it manually
-            return res.json({ message: 'Password reset, but PHP email failed', tempPassword });
+            console.error('Error calling PHP mail service:', phpErr && phpErr.message ? phpErr.message : phpErr);
+            // If mail failed, fallback to setting a temporary password so admin can give it to user
+            const tempPassword = Math.random().toString(36).slice(-10) || 'TempPass123!';
+            user.password = await bcrypt.hash(tempPassword, 10);
+            // clear reset token fields to avoid confusion
+            user.resetToken = undefined;
+            user.resetExpires = undefined;
+            await user.save();
+            return res.json({ message: 'Password reset, but email failed', tempPassword });
         }
     }
 
-    // If no PHP mail endpoint configured, return temp password so admin can deliver it manually
+    // No PHP mail configured: fallback to temp password (admin must deliver it manually)
+    const tempPassword = Math.random().toString(36).slice(-10) || 'TempPass123!';
+    user.password = await bcrypt.hash(tempPassword, 10);
+    user.resetToken = undefined;
+    user.resetExpires = undefined;
+    await user.save();
     res.json({ message: 'Password reset (no PHP mail service configured)', tempPassword });
 }));
 
@@ -623,6 +644,25 @@ app.get('/api/bookings/date/:date', auth, authorize('admin', 'staff'), catchAsyn
     }).populate('staffId', 'name').sort({ time: 1 });
 
     res.json(bookings);
+}));
+
+// == PUBLIC: Complete password reset using token ==
+app.post('/api/users/reset-password', catchAsync(async (req, res) => {
+    const { token, password, email } = req.body;
+    if (!token || !password || !email) return res.status(400).json({ error: 'token, email and password are required' });
+
+    const crypto = require('crypto');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+    const user = await User.findOne({ email: email, resetToken: tokenHash, resetExpires: { $gt: new Date() } });
+    if (!user) return res.status(400).json({ error: 'Invalid or expired token' });
+
+    user.password = await bcrypt.hash(password, 10);
+    user.resetToken = undefined;
+    user.resetExpires = undefined;
+    await user.save();
+
+    res.json({ message: 'Password updated successfully' });
 }));
 
 // == ALL BOOKINGS (Admin) ==
