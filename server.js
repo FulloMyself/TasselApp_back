@@ -240,14 +240,14 @@ const authorize = (...roles) => (req, res, next) => {
 
 // == AUTH ==
 app.post('/api/auth/register', catchAsync(async (req, res) => {
-    const { name, email, password } = req.body;
+    const { name, email, password, phone } = req.body;
     if (await User.findOne({ email })) return res.status(400).json({ error: 'User already exists' });
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await new User({ name, email, password: hashedPassword }).save();
+    const user = await new User({ name, email, password: hashedPassword, phone }).save();
 
     const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
-    res.status(201).json({ token, user: { id: user._id, name, email, role: user.role } });
+    res.status(201).json({ token, user: { id: user._id, name, email, role: user.role, phone: user.phone } });
 }));
 
 app.post('/api/auth/login', catchAsync(async (req, res) => {
@@ -271,13 +271,14 @@ app.put('/api/users/me', auth, catchAsync(async (req, res) => {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const { name, email, password } = req.body;
+    const { name, email, password, phone } = req.body;
     user.name = name || user.name;
     user.email = email || user.email;
+    user.phone = phone || user.phone;
     if (password) user.password = await bcrypt.hash(password, 10);
 
     await user.save();
-    res.json({ message: 'Profile updated', user: { id: user._id, name: user.name, email: user.email, role: user.role } });
+    res.json({ message: 'Profile updated', user: { id: user._id, name: user.name, email: user.email, role: user.role, phone: user.phone } });
 }));
 
 // Internal Create Admin/Staff
@@ -406,6 +407,12 @@ app.get('/api/services/public', catchAsync(async (req, res) => {
     };
 
     res.json(grouped);
+}));
+
+// Public products for guests (no auth required)
+app.get('/api/products/public', catchAsync(async (req, res) => {
+    const products = await Product.find().sort({ name: 1 });
+    res.json(products);
 }));
 
 // Create new service
